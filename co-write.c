@@ -6,9 +6,10 @@
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
+#include <omp.h>
 
 #define MAX_TEXT_SIZE 10000
-#define MAX_LINES 255
+#define MAX_LINES 25
 #define MAX_LINE_LENGTH 256
 #define MAX_USERNAME 50
 #define MAX_MESSAGE 256
@@ -227,38 +228,50 @@ gboolean update_interface(gpointer data) {
             }
             break;
             
-	case MSG_LINE_LOCK_GRANTED:
-		editor->editing_line = msg->line_number;
-		editor->lines[msg->line_number].locked_by = editor->rank;
-		strcpy(editor->lines[msg->line_number].owner_name, editor->username);
-		
-		char *current = get_line_content(editor->text_buffer, msg->line_number);
-		strncpy(editor->line_backup, current, MAX_LINE_LENGTH - 1);
-		g_free(current);
-		
-		gtk_widget_set_sensitive(editor->edit_button, FALSE);
-		gtk_widget_set_sensitive(editor->commit_button, TRUE);
-		gtk_widget_set_sensitive(editor->line_spin, FALSE);
-		
-		highlight_line(editor, msg->line_number);
-		update_status(NULL, editor);
-		
-		// posicionar cursor depois do identificador
-		GtkTextIter iter;
-		gtk_text_buffer_get_iter_at_line(editor->text_buffer, &iter, msg->line_number);
-		while (!gtk_text_iter_ends_line(&iter)) {
-			if (gtk_text_iter_get_char(&iter) == '|') {
-			    gtk_text_iter_forward_char(&iter);
-			    if (gtk_text_iter_get_char(&iter) == ' ') {
-			        gtk_text_iter_forward_char(&iter);
-			    }
-			    break;
-			}
-			gtk_text_iter_forward_char(&iter);
-		}
-		gtk_text_buffer_place_cursor(editor->text_buffer, &iter);
-		gtk_text_view_set_editable(GTK_TEXT_VIEW(editor->text_view), TRUE);
-		break;
+        // Quando o processo recebe permissão para editar uma linha específica
+        case MSG_LINE_LOCK_GRANTED:
+        // Atualiza o número da linha atualmente sendo editada
+        editor->editing_line = msg->line_number;
+
+        // Registra que essa linha está bloqueada pelo processo atual
+        editor->lines[msg->line_number].locked_by = editor->rank;
+        strcpy(editor->lines[msg->line_number].owner_name, editor->username);
+
+        // Salva o conteúdo atual da linha como backup para possível cancelamento
+        char *current = get_line_content(editor->text_buffer, msg->line_number);
+        strncpy(editor->line_backup, current, MAX_LINE_LENGTH - 1);
+        g_free(current);
+
+        // Desabilita o botão de "Editar" e habilita o de "Confirmar" (commit)
+        gtk_widget_set_sensitive(editor->edit_button, FALSE);
+        gtk_widget_set_sensitive(editor->commit_button, TRUE);
+        gtk_widget_set_sensitive(editor->line_spin, FALSE);
+
+        // Destaca visualmente a linha no editor
+        highlight_line(editor, msg->line_number);
+
+        // Atualiza o status da interface (exibe quem está editando)
+        update_status(NULL, editor);
+
+        // Posiciona o cursor logo após o identificador da linha (ex: 001|)
+        GtkTextIter iter;
+        gtk_text_buffer_get_iter_at_line(editor->text_buffer, &iter, msg->line_number);
+        while (!gtk_text_iter_ends_line(&iter)) {
+        if (gtk_text_iter_get_char(&iter) == '|') {
+            gtk_text_iter_forward_char(&iter);
+            if (gtk_text_iter_get_char(&iter) == ' ') {
+                gtk_text_iter_forward_char(&iter);
+            }
+            break;
+        }
+        gtk_text_iter_forward_char(&iter);
+    }
+
+    // Posiciona o cursor no local calculado e permite edição do campo
+    gtk_text_buffer_place_cursor(editor->text_buffer, &iter);
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(editor->text_view), TRUE);
+    break;
+
             
         case MSG_LINE_LOCK_DENIED:
             char denied_msg[256];
@@ -549,6 +562,89 @@ void on_window_destroy(GtkWidget *widget, gpointer data) {
     gtk_main_quit();
 }
 
+    // Função usada para preencher automaticamente uma linha do editor com texto simulado
+    void generate_random_line_content(EditorData *editor, int line_num) {
+    // Só gera conteúdo se a linha não estiver bloqueada por outro processo
+    if (editor->lines[line_num].locked_by != -1) return;
+
+    // Cria um buffer para armazenar o conteúdo gerado
+    char random_data[MAX_LINE_LENGTH] = {0};
+
+    // Lista de palavras possíveis (no exemplo, apenas "teste")
+    const char *words[] = {"teste"};
+    const int num_words = sizeof(words) / sizeof(words[0]);
+
+    // Define a quantidade de palavras por linha (entre 3 e 7)
+    int num_words_in_line = 3 + rand() % 5;
+
+    // Concatena as palavras no buffer
+    for (int w = 0; w < num_words_in_line; w++) {
+        if (w > 0) strncat(random_data, " ", MAX_LINE_LENGTH - strlen(random_data) - 1);
+        strncat(random_data, words[rand() % num_words], MAX_LINE_LENGTH - strlen(random_data) - 1);
+    }
+
+    // Monta a mensagem para atualizar a linha
+    Message update_msg;
+    memset(&update_msg, 0, sizeof(Message));
+    update_msg.type = MSG_LINE_UPDATE;
+    update_msg.line_number = line_num;
+    update_msg.sender_rank = editor->rank;
+    strncpy(update_msg.sender_name, editor->username, MAX_USERNAME - 1);
+    strncpy(update_msg.content, random_data, MAX_LINE_LENGTH - 1);
+
+    // Envia a mensagem para todos os outros processos (menos ele mesmo)
+    for (int j = 0; j < editor->size; j++) {
+        if (j != editor->rank) {
+            MPI_Send(&update_msg, sizeof(Message), MPI_BYTE, j, 0, MPI_COMM_WORLD);
+        }
+    }
+
+    // Atualiza a interface local usando g_idle_add (para evitar conflitos de thread)
+    UpdateData *update = g_new(UpdateData, 1);
+    update->editor = editor;
+    update->msg = update_msg;
+    g_idle_add(update_interface, update);
+}
+
+
+    // Função chamada quando o botão "Gerar Dados Automáticos" é clicado
+    void on_generate_data(GtkWidget *button, gpointer data) {
+    EditorData *editor = (EditorData *)data;
+
+    // Desabilita o botão temporariamente para evitar cliques múltiplos
+    gtk_widget_set_sensitive(button, FALSE);
+
+    // Adiciona uma entrada no log
+    append_log(editor, "Iniciando geração automática de dados...");
+
+    // Percorre todas as linhas do editor
+    for (int i = 0; i < MAX_LINES; i++) {
+        // Mantém a interface responsiva processando eventos GTK
+        while (gtk_events_pending()) {
+            gtk_main_iteration();
+        }
+
+        // Verifica se a linha está desbloqueada
+        if (editor->lines[i].locked_by == -1) {
+            // Gera conteúdo automático para a linha
+            generate_random_line_content(editor, i);
+
+            // Aguarda 10 milissegundos entre linhas (para suavidade visual)
+            usleep(10000);
+        }
+    }
+
+    // Informa no log que a geração foi concluída
+    append_log(editor, "Geração de dados concluída");
+
+    // Reabilita o botão após o término
+    gtk_widget_set_sensitive(button, TRUE);
+
+    // Atualiza o status geral da interface
+    update_status(NULL, editor);
+}
+
+
 int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
     
@@ -602,6 +698,14 @@ int main(int argc, char *argv[]) {
     gtk_widget_set_sensitive(editor.commit_button, FALSE);
     gtk_box_pack_start(GTK_BOX(control_box), editor.commit_button, FALSE, FALSE, 5);
     
+   // Cria o botão "Gerar Dados Automáticos" e conecta seu clique à função acima
+    GtkWidget *generate_button = gtk_button_new_with_label("Gerar Dados Automáticos");
+
+    // Adiciona o botão à interface (em uma caixa de controles)
+    gtk_box_pack_start(GTK_BOX(control_box), generate_button, FALSE, FALSE, 5);
+
+    // Conecta o botão ao sinal "clicked", chamando on_generate_data quando clicado
+    g_signal_connect(generate_button, "clicked", G_CALLBACK(on_generate_data), &editor);
     // Editor
     GtkWidget *editor_frame = gtk_frame_new("Editor (Verde=você | Rosa=outro usuário)");
     gtk_box_pack_start(GTK_BOX(left_box), editor_frame, TRUE, TRUE, 0);
@@ -618,9 +722,9 @@ int main(int argc, char *argv[]) {
     char initial_text[MAX_LINES * 10];
     strcpy(initial_text, "");
     for (int i = 0; i < MAX_LINES; i++) {
-	    char line[10];
-	    sprintf(line, "%03d| \n", i + 1);
-	    strcat(initial_text, line);
+        char line[10];
+        sprintf(line, "%03d| \n", i + 1);
+        strcat(initial_text, line);
     }
     gtk_text_buffer_set_text(editor.text_buffer, initial_text, -1);
     
@@ -675,8 +779,6 @@ int main(int argc, char *argv[]) {
     g_signal_connect(editor.line_spin, "value-changed", G_CALLBACK(update_status), &editor);
     g_signal_connect(editor.text_view, "button-press-event", G_CALLBACK(on_button_press), &editor);
     g_signal_connect(editor.text_buffer, "insert-text", G_CALLBACK(on_insert_text), &editor);
-    
-    //TODO: adicionar botato de geracao automatica de dados
     
     update_status(NULL, &editor);
     gtk_widget_show_all(editor.window);
