@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
+#include <math.h>
 
 #define MAX_TEXT_SIZE 10000
 #define MAX_LINES 255
@@ -619,7 +620,8 @@ int main(int argc, char *argv[]) {
     strcpy(initial_text, "");
     for (int i = 0; i < MAX_LINES; i++) {
 	    char line[10];
-	    sprintf(line, "%03d| \n", i + 1);
+	    int length_max_lines = floor(log10(MAX_LINES)) + 1;
+	    sprintf(line, "%0*d| \n", length_max_lines, i + 1);
 	    strcat(initial_text, line);
     }
     gtk_text_buffer_set_text(editor.text_buffer, initial_text, -1);
