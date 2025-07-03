@@ -6,10 +6,10 @@
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
+#include <omp.h>
 #include <math.h>
 
-#define MAX_TEXT_SIZE 10000
-#define MAX_LINES 255
+#define MAX_LINES 2555
 #define MAX_LINE_LENGTH 256
 #define MAX_USERNAME 50
 #define MAX_MESSAGE 256
@@ -395,6 +395,7 @@ void on_generate_data_omp(GtkWidget *button, gpointer data) {
     append_log(editor, log_msg);
 
     OMPLineData *generated_data = calloc(MAX_LINES, sizeof(OMPLineData));
+
     char (*log_messages)[256] = calloc(MAX_LINES, 256);
     int *log_flags = calloc(MAX_LINES, sizeof(int));
 
@@ -722,6 +723,89 @@ void on_window_destroy(GtkWidget *widget, gpointer data) {
     running = 0;
     gtk_main_quit();
 }
+
+    // Função usada para preencher automaticamente uma linha do editor com texto simulado
+    void generate_random_line_content(EditorData *editor, int line_num) {
+    // Só gera conteúdo se a linha não estiver bloqueada por outro processo
+    if (editor->lines[line_num].locked_by != -1) return;
+
+    // Cria um buffer para armazenar o conteúdo gerado
+    char random_data[MAX_LINE_LENGTH] = {0};
+
+    // Lista de palavras possíveis (no exemplo, apenas "teste")
+    const char *words[] = {"teste"};
+    const int num_words = sizeof(words) / sizeof(words[0]);
+
+    // Define a quantidade de palavras por linha (entre 3 e 7)
+    int num_words_in_line = 3 + rand() % 5;
+
+    // Concatena as palavras no buffer
+    for (int w = 0; w < num_words_in_line; w++) {
+        if (w > 0) strncat(random_data, " ", MAX_LINE_LENGTH - strlen(random_data) - 1);
+        strncat(random_data, words[rand() % num_words], MAX_LINE_LENGTH - strlen(random_data) - 1);
+    }
+
+    // Monta a mensagem para atualizar a linha
+    Message update_msg;
+    memset(&update_msg, 0, sizeof(Message));
+    update_msg.type = MSG_LINE_UPDATE;
+    update_msg.line_number = line_num;
+    update_msg.sender_rank = editor->rank;
+    strncpy(update_msg.sender_name, editor->username, MAX_USERNAME - 1);
+    strncpy(update_msg.content, random_data, MAX_LINE_LENGTH - 1);
+
+    // Envia a mensagem para todos os outros processos (menos ele mesmo)
+    for (int j = 0; j < editor->size; j++) {
+        if (j != editor->rank) {
+            MPI_Send(&update_msg, sizeof(Message), MPI_BYTE, j, 0, MPI_COMM_WORLD);
+        }
+    }
+
+    // Atualiza a interface local usando g_idle_add (para evitar conflitos de thread)
+    UpdateData *update = g_new(UpdateData, 1);
+    update->editor = editor;
+    update->msg = update_msg;
+    g_idle_add(update_interface, update);
+}
+
+
+    // Função chamada quando o botão "Gerar Dados Automáticos" é clicado
+    void on_generate_data(GtkWidget *button, gpointer data) {
+    EditorData *editor = (EditorData *)data;
+
+    // Desabilita o botão temporariamente para evitar cliques múltiplos
+    gtk_widget_set_sensitive(button, FALSE);
+
+    // Adiciona uma entrada no log
+    append_log(editor, "Iniciando geração automática de dados...");
+
+    // Percorre todas as linhas do editor
+    for (int i = 0; i < MAX_LINES; i++) {
+        // Mantém a interface responsiva processando eventos GTK
+        while (gtk_events_pending()) {
+            gtk_main_iteration();
+        }
+
+        // Verifica se a linha está desbloqueada
+        if (editor->lines[i].locked_by == -1) {
+            // Gera conteúdo automático para a linha
+            generate_random_line_content(editor, i);
+
+            // Aguarda 10 milissegundos entre linhas (para suavidade visual)
+            usleep(10000);
+        }
+    }
+
+    // Informa no log que a geração foi concluída
+    append_log(editor, "Geração de dados concluída");
+
+    // Reabilita o botão após o término
+    gtk_widget_set_sensitive(button, TRUE);
+
+    // Atualiza o status geral da interface
+    update_status(NULL, editor);
+}
+
 
 int main(int argc, char *argv[]) {
     // Inicialização MPI
