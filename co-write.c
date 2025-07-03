@@ -769,44 +769,6 @@ void on_window_destroy(GtkWidget *widget, gpointer data) {
 }
 
 
-    // Função chamada quando o botão "Gerar Dados Automáticos" é clicado
-    void on_generate_data(GtkWidget *button, gpointer data) {
-    EditorData *editor = (EditorData *)data;
-
-    // Desabilita o botão temporariamente para evitar cliques múltiplos
-    gtk_widget_set_sensitive(button, FALSE);
-
-    // Adiciona uma entrada no log
-    append_log(editor, "Iniciando geração automática de dados...");
-
-    // Percorre todas as linhas do editor
-    for (int i = 0; i < MAX_LINES; i++) {
-        // Mantém a interface responsiva processando eventos GTK
-        while (gtk_events_pending()) {
-            gtk_main_iteration();
-        }
-
-        // Verifica se a linha está desbloqueada
-        if (editor->lines[i].locked_by == -1) {
-            // Gera conteúdo automático para a linha
-            generate_random_line_content(editor, i);
-
-            // Aguarda 10 milissegundos entre linhas (para suavidade visual)
-            usleep(10000);
-        }
-    }
-
-    // Informa no log que a geração foi concluída
-    append_log(editor, "Geração de dados concluída");
-
-    // Reabilita o botão após o término
-    gtk_widget_set_sensitive(button, TRUE);
-
-    // Atualiza o status geral da interface
-    update_status(NULL, editor);
-}
-
-
 int main(int argc, char *argv[]) {
     // Inicialização MPI
     MPI_Init(&argc, &argv);
