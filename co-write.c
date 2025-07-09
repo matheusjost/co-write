@@ -724,51 +724,6 @@ void on_window_destroy(GtkWidget *widget, gpointer data) {
     gtk_main_quit();
 }
 
-    // Função usada para preencher automaticamente uma linha do editor com texto simulado
-    void generate_random_line_content(EditorData *editor, int line_num) {
-    // Só gera conteúdo se a linha não estiver bloqueada por outro processo
-    if (editor->lines[line_num].locked_by != -1) return;
-
-    // Cria um buffer para armazenar o conteúdo gerado
-    char random_data[MAX_LINE_LENGTH] = {0};
-
-    // Lista de palavras possíveis (no exemplo, apenas "teste")
-    const char *words[] = {"teste"};
-    const int num_words = sizeof(words) / sizeof(words[0]);
-
-    // Define a quantidade de palavras por linha (entre 3 e 7)
-    int num_words_in_line = 3 + rand() % 5;
-
-    // Concatena as palavras no buffer
-    for (int w = 0; w < num_words_in_line; w++) {
-        if (w > 0) strncat(random_data, " ", MAX_LINE_LENGTH - strlen(random_data) - 1);
-        strncat(random_data, words[rand() % num_words], MAX_LINE_LENGTH - strlen(random_data) - 1);
-    }
-
-    // Monta a mensagem para atualizar a linha
-    Message update_msg;
-    memset(&update_msg, 0, sizeof(Message));
-    update_msg.type = MSG_LINE_UPDATE;
-    update_msg.line_number = line_num;
-    update_msg.sender_rank = editor->rank;
-    strncpy(update_msg.sender_name, editor->username, MAX_USERNAME - 1);
-    strncpy(update_msg.content, random_data, MAX_LINE_LENGTH - 1);
-
-    // Envia a mensagem para todos os outros processos (menos ele mesmo)
-    for (int j = 0; j < editor->size; j++) {
-        if (j != editor->rank) {
-            MPI_Send(&update_msg, sizeof(Message), MPI_BYTE, j, 0, MPI_COMM_WORLD);
-        }
-    }
-
-    // Atualiza a interface local usando g_idle_add (para evitar conflitos de thread)
-    UpdateData *update = g_new(UpdateData, 1);
-    update->editor = editor;
-    update->msg = update_msg;
-    g_idle_add(update_interface, update);
-}
-
-
 int main(int argc, char *argv[]) {
     // Inicialização MPI
     MPI_Init(&argc, &argv);
